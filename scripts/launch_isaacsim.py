@@ -18,6 +18,7 @@
 
 import os
 import threading
+import time
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -85,23 +86,42 @@ except ValueError:
 if TASK_TIME > 0:
     print(f'[task] 競技モード: {TASK_TIME:.0f} 秒 (シミュレータ内時間) で自動終了・録画あり')
 
-viewports.set_camera_view(eye=np.array(
-    [3.7, 1.7, 5.0]), target=np.array([0, 0, 0]))
+# ============================================================
+# カメラ調整モード (CAMERA_TUNE 環境変数)
+# ============================================================
+# `make tune` で有効になる。観戦カメラ 4 台だけ作り、録画も自動終了もしない。
+# GUI で位置・画角をいじると recordings/tune/ に設定 yaml とプレビュー画像が
+# 書き出されるので、それを configs/placement.yaml に貼って確定させる。
+CAMERA_TUNE = os.environ.get('CAMERA_TUNE', '').strip().lower() in (
+    '1', 'true', 'yes', 'on')
+if CAMERA_TUNE and TASK_TIME > 0:
+    print('[task] CAMERA_TUNE=1 のため競技モード(録画)は無効にします。', flush=True)
+    TASK_TIME = 0.0
 
-create_prim(
-    '/World/Light_1',
-    'SphereLight',
-    position=np.array([2.0, 0.0, 5.0]),
-    attributes={'inputs:radius': 0.01, 'inputs:intensity': 5e4,
-                'inputs:color': (1.0, 1.0, 1.0)},
+# 物理 60 Hz のうち何ステップに 1 回描画するか。描画したフレームだけがカメラの
+# publish 候補になるので、ここが RGB-D の上限レートを決める:
+#   カメラ publish [Hz] = 60 / RENDER_EVERY_N_STEPS / (CAMERA_FRAME_SKIP + 1) * RTF
+# 既定 2 = 30 Hz 描画。CAMERA_FRAME_SKIP=0 と合わせて実機同等の 30 Hz を狙う。
+# (以前は 4 で、CAMERA_FRAME_SKIP=2 と合わせて 5 Hz 名目 = 実測 3.9 Hz だった。)
+# RTF が 1.0 を保てないときは 3 や 4 に戻す。物理と全身制御は常に 60 Hz。
+try:
+    RENDER_EVERY_N_STEPS = max(
+        1, int(os.environ.get('RENDER_EVERY_N_STEPS', '2')))
+except ValueError:
+    print(
+        '[render] WARNING: RENDER_EVERY_N_STEPS=%r is invalid; using 2'
+        % os.environ.get('RENDER_EVERY_N_STEPS'),
+        flush=True,
+    )
+    RENDER_EVERY_N_STEPS = 2
+print(
+    '[render] viewport update every %d physics step(s)'
+    % RENDER_EVERY_N_STEPS,
+    flush=True,
 )
-create_prim(
-    '/World/Light_2',
-    'SphereLight',
-    position=np.array([-2.0, 0.0, 5.0]),
-    attributes={'inputs:radius': 0.01, 'inputs:intensity': 5e4,
-                'inputs:color': (1.0, 1.0, 1.0)},
-)
+
+# (初期視点と照明の配置は、部屋の中心が分かってからでないと決められないので
+#  ワールドファイルを読んだ後 = 床サイズの計算の直後に行う)
 
 
 # アセットの「根っこ(root)」。
@@ -164,6 +184,25 @@ else:
     _floor_size, _floor_cx, _floor_cy = 15.0, 0.0, 0.0
 print(f'[floor] size={_floor_size:.2f}m center=({_floor_cx:.2f}, {_floor_cy:.2f})')
 
+# ============================================================
+# 初期視点と部屋の照明
+# ============================================================
+# どちらも「部屋の中心」を基準に置く。world 座標を直接書くと、ワールドを
+# 平行移動・回転したときにここだけ取り残されて照明が偏る (実際に起きた)。
+viewports.set_camera_view(
+    eye=np.array([_floor_cx - 1.7, _floor_cy + 3.7, 5.0]),
+    target=np.array([_floor_cx, _floor_cy, 0.0]))
+
+# 部屋の中心をはさんで 2 灯。4m 離して対称に置く。
+for _i, _dy in enumerate((2.0, -2.0)):
+    create_prim(
+        f'/World/Light_{_i + 1}',
+        'SphereLight',
+        position=np.array([_floor_cx, _floor_cy + _dy, 5.0]),
+        attributes={'inputs:radius': 0.01, 'inputs:intensity': 5e4,
+                    'inputs:color': (1.0, 1.0, 1.0)},
+    )
+
 # 物理の地面 (ロボット・物体が乗る面)。薄い板に当たり判定を付け、上面を z=0 に置く。
 # 大きさは上で計算した「テクスチャ床と同じ」正方形。厚さは 5cm (横から見ても薄い板)。
 _GROUND_THICKNESS = 0.05  # 床の厚さ (m)
@@ -199,6 +238,28 @@ _runtime_rigid_object_paths = []
 # ============================================================
 _spawn_initial_states = []
 
+# GUI (ギズモ) で動かされた prim を起動時の姿勢へ戻すためのテーブル。
+# _spawn_initial_states は剛体を持つ物体しか持たないので、剛体を持たない静的 prim
+# (world 由来の家具・壁, /World/Furniture, /World/People) は手で動かすと戻せない。
+# それらは姿勢の真実が USD の xformOp だけにあるため、起動時 (timeline.play() の
+# 直前) の op の値をここに控えてリセット時に書き戻す。
+#
+# 要素は prim 単位のエントリ:
+#   {'prim': Usd.Prim, 'path': str,
+#    'ops': [{'attr': Usd.Attribute, 'value': op の値}, ...],
+#    'order_attr': Usd.Attribute, 'order': xformOpOrder の値 (未 authored なら None)}
+#
+# xformOpOrder も控えるのが要点。ギズモは op を持たない prim を掴むと
+# xformOp:translate や xformOp:transform を新しく生やすので、op の値を書き戻す
+# だけでは「後から生えた op」がスタックに残って prim が元に戻らない。
+_manual_initial_xforms = []
+
+# 上の記録対象にする「スポーン単位の root prim」パス。world 由来の家具・壁と
+# drop_object の物体はどちらもステージ直下 (/<name>) に作られるが、そこには Kit の
+# ビューポートカメラ (/OmniverseKit_Persp 等) も同居している。ステージ直下を丸ごと
+# 走査するとリセットのたびにユーザの視点まで戻ってしまうので、作った物だけを控える。
+_spawn_root_paths = []
+
 # サービスコールバック (rclpy executor スレッド) から物理ステップ中に prim を
 # 書き換えるのは危険なので、フラグを立ててメインループ側で物理ステップ間に実行する。
 _reset_requested = False
@@ -214,9 +275,189 @@ def _request_reset_and_wait():
     _reset_done.wait(timeout=5.0)
 
 
+def _manual_reset_target_prims():
+    """GUI で掴んで動かしうる「スポーン単位の root prim」を集める。
+
+    捕捉はこの root から下のサブツリー全体が対象 (_capture_manual_reset_targets)。
+    ここで root だけを列挙するのは、ステージ直下を丸ごと走査すると Kit の
+    ビューポートカメラ (/OmniverseKit_Persp 等) まで拾ってしまい、リセットのたびに
+    ユーザの視点が戻ってしまうため。起点は「自分で作った物」に限る。
+      - _spawn_root_paths: world 由来の家具・壁と drop_object の物体。
+        ロボット (/hsrb) は reset_to_spawn が担当するので入っていない。
+      - /World/Furniture, /World/People の子: furniture_spawn / people_spawn が置く。
+        (/World 自身は床や環境テクスチャも含むので、この 2 つの子だけを見る)
+    """
+    _st = omni.usd.get_context().get_stage()
+    prims = []
+    for _path in _spawn_root_paths:
+        _p = _st.GetPrimAtPath(_path)
+        if _p and _p.IsValid():
+            prims.append(_p)
+    for _root_path in (furniture_spawn.FURNITURE_ROOT,
+                       people_spawn.PEOPLE_ROOT):
+        _root = _st.GetPrimAtPath(_root_path)
+        if _root and _root.IsValid():
+            prims.extend(_root.GetChildren())
+    return prims
+
+
+# サブツリーへ潜らず root の xformOp だけを控える旧挙動へ戻す非常口。
+# 深い捕捉が重すぎて起動時間が問題になったとき用 (実測値は起動ログの
+# [reset_world] captured ... に出る)。
+_DEEP_CAPTURE = os.environ.get('RESET_DEEP_CAPTURE', '1') != '0'
+
+
+def _capture_prim_xform_state(prim):
+    """1 prim の xformOp とその順序を控える。Xformable でなければ None。"""
+    _x = UsdGeom.Xformable(prim)
+    if not _x:
+        return None
+
+    _ops = []
+    for _op in _x.GetOrderedXformOps():
+        _attr = _op.GetAttr()
+        if _attr and _attr.IsValid():
+            _ops.append({'attr': _attr, 'value': _attr.Get()})
+
+    _order_attr = _x.GetXformOpOrderAttr()
+    # authored されていなければ None として控える。復元時に順序を空にして、
+    # ギズモが後から生やした op ごと無かったことにするため。
+    _order = (_order_attr.Get()
+              if _order_attr and _order_attr.HasAuthoredValue() else None)
+
+    return {
+        'prim': prim,
+        'path': str(prim.GetPath()),
+        'ops': _ops,
+        'order_attr': _order_attr,
+        'order': _order,
+    }
+
+
+def _capture_manual_reset_targets():
+    """起動時の xformOp の値と順序を控える (reset_world で書き戻すため)。
+
+    行列 1 個に畳まず op 単位で持つ。drop_object が Y-up モデルに後付けする
+    rotateX(90) や furniture_spawn のスケール補正を含む op スタックの順序を
+    壊さずに復元できる。
+
+    スポーン root だけでなくその配下も走査する。tall table の天板のような
+    「モデル内部のメッシュ」をギズモで掴まれると、root の op を戻しても
+    子 prim に生えた op が残って戻らないため。走査は起動時の 1 回だけで、
+    書き戻しは reset のときだけなので、実行中のフレームには乗らない。
+    """
+    _t0 = time.perf_counter()
+    _prim_count = 0
+    _op_count = 0
+
+    for _root in _manual_reset_target_prims():
+        try:
+            for _p in (Usd.PrimRange(_root) if _DEEP_CAPTURE else (_root,)):
+                if not _p.IsActive():
+                    continue
+                _state = _capture_prim_xform_state(_p)
+                if _state is None:
+                    continue
+                _manual_initial_xforms.append(_state)
+                _prim_count += 1
+                _op_count += len(_state['ops'])
+        except Exception as _e:
+            print('[reset_world] xform capture failed for %s: %r'
+                  % (_root.GetPath(), _e), flush=True)
+
+    print('[reset_world] captured %d xform ops over %d prims for manual-move '
+          'reset in %.0f ms (deep=%s)'
+          % (_op_count, _prim_count, 1e3 * (time.perf_counter() - _t0),
+             _DEEP_CAPTURE), flush=True)
+
+
+def _restore_manual_xforms():
+    """控えておいた xformOp を書き戻す (手で動かした prim を元の位置へ)。
+
+    サブツリーまで控えているので対象は数千 prim になりうる。値が起動時と同じ prim
+    には書き込まない。無駄な authoring と USD の変更通知を出さないためで、
+    実際に動かされた prim は一部だけなので大半はここで素通りする。
+    """
+    for s in _manual_initial_xforms:
+        for _op in s['ops']:
+            _attr = _op['attr']
+            if _op['value'] is None or not _attr.IsValid():
+                # GUI で消された prim など。書き戻せないので飛ばす。
+                continue
+            try:
+                if _attr.Get() != _op['value']:
+                    _attr.Set(_op['value'])
+            except Exception as _e:
+                print('[reset_world] xform restore failed for %s: %r'
+                      % (_attr.GetPath(), _e), flush=True)
+
+        # 値を戻したあとに順序を戻す。ギズモが後から生やした op はここで
+        # xformOpOrder から外れ、属性は残るが評価されなくなる。
+        _prim = s['prim']
+        _order_attr = s['order_attr']
+        if not _prim.IsValid() or not _order_attr or not _order_attr.IsValid():
+            continue
+        try:
+            if s['order'] is None:
+                # 起動時は順序が未 authored = 変換なし。ギズモに掴まれて順序が
+                # 生えた prim だけ空へ戻す (ClearXformOpOrder は空の順序を書くので、
+                # 未 authored の prim に対して呼ぶと全 prim に無駄な opinion が残る)。
+                if _order_attr.HasAuthoredValue():
+                    UsdGeom.Xformable(_prim).ClearXformOpOrder()
+            elif _order_attr.Get() != s['order']:
+                _order_attr.Set(s['order'])
+        except Exception as _e:
+            print('[reset_world] xformOpOrder restore failed for %s: %r'
+                  % (s['path'], _e), flush=True)
+
+
+def _capture_spawn_rigid_state(root_prim, label):
+    """スポーンした物の剛体のワールド姿勢を控える (reset_world で戻すため)。
+
+    剛体 (RigidBodyAPI) が付いた prim を subtree から探し、その「合成済み
+    ワールド変換」を保存する。ワールド変換で持つことで Y-up の rotateX(90) 補正や
+    YCB の /body 内部オフセットが自動で正しく反映され、reset 時に
+    dc.get_rigid_body(body_path) でそのまま戻せる。
+
+    剛体 prim のパスはモデルによって違う (YCB と trofast は /<name>/body、
+    wrc_* は /<name>/link) ので、パスを決め打ちせず subtree から探す。
+    剛体を持たないモデル (壁の unit_box など) は何も控えない。
+    """
+    if not root_prim or not root_prim.IsValid():
+        return
+    try:
+        _rb_prim = next(
+            (p for p in Usd.PrimRange(root_prim)
+             if p.HasAPI(UsdPhysics.RigidBodyAPI)),
+            None,
+        )
+        if _rb_prim is None:
+            return
+        _m = UsdGeom.Xformable(_rb_prim).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default())
+        _t = _m.ExtractTranslation()
+        _q = _m.GetOrthonormalized().ExtractRotationQuat()
+        _qi = _q.GetImaginary()
+        _spawn_initial_states.append({
+            'body_path': str(_rb_prim.GetPath()),
+            'p': (_t[0], _t[1], _t[2]),
+            'q': (_q.GetReal(), _qi[0], _qi[1], _qi[2]),  # (w, x, y, z)
+        })
+    except Exception as _e:
+        print('[reset_world] spawn pose capture failed for %s: %r' %
+              (label, _e), flush=True)
+
+
 model_root = os.path.join(repo_root, 'usd', 'wrs_models')
 if not os.path.exists(model_root):
     model_root = '/app/usd/wrs_models'
+
+# 競技当日に追加する未知物体。wrs_models と同じく
+#   <object名>/model.usd
+# の構成にしておけば placement.yaml の object: から参照できる。
+unknown_object_root = os.path.join(repo_root, 'usd', 'unknown_objects')
+if not os.path.exists(unknown_object_root):
+    unknown_object_root = '/app/usd/unknown_objects'
 
 # YCB 以外の「物理設定を持たないモデル」を読み込んだときに付ける既定の質量 (kg)。
 # YCB は 1 つずつ実測値が model.usd に入っているので、この値は通常使われない。
@@ -257,6 +498,7 @@ for i in root.findall('world/include'):
         _cube_prim = omni.usd.get_context().get_stage().GetPrimAtPath(stage_path)
         physx_utils.setCollider(_cube_prim, approximationShape='none')
         model_names.append(model_name)
+        _spawn_root_paths.append(stage_path)
     if model_uri == 'model://unit_cylinder' and not os.path.exists(model_path):
         # unit_box と同様に、USD モデルが無い円柱は Cylinder prim で直接作る。
         # scale は (直径, 直径, 高さ) 指定 → prim には半分を渡す (Cube と同じ扱い)。
@@ -279,6 +521,7 @@ for i in root.findall('world/include'):
         _cyl_prim = omni.usd.get_context().get_stage().GetPrimAtPath(stage_path)
         physx_utils.setCollider(_cyl_prim, approximationShape='convexHull')
         model_names.append(model_name)
+        _spawn_root_paths.append(stage_path)
     if not os.path.exists(model_path):
         continue
     create_prim(
@@ -298,7 +541,161 @@ for i in root.findall('world/include'):
         root_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
         root_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
         root_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
+    else:
+        # reset_world 用: <static> の無いモデルは FixedJoint で固定されず、
+        # ロボットに押されると動く動的剛体 (trofast_*, wrc_tray_*, wrc_container_*)。
+        # 参照した model.usd 側に RigidBodyAPI が入っているので、剛体のワールド姿勢を
+        # 控えて _reset_objects() が dynamic control で戻せるようにする。親 Xform の
+        # xformOp を書き戻すだけでは PhysX が持つ姿勢を上書きできない。
+        # <static> 付きは FixedJoint があるので対象にしない (dc で姿勢を書くと
+        # ジョイントと競合する)。まだ play() していないので、ここで控えるのは
+        # world ファイルどおりの姿勢になる。
+        _capture_spawn_rigid_state(
+            omni.usd.get_context().get_stage().GetPrimAtPath(stage_path),
+            model_name)
     model_names.append(model_name)
+    _spawn_root_paths.append(stage_path)
+
+
+# ============================================================
+# 引き出し (Room SW の trofast) を「本物の引き出し」にする
+# ============================================================
+# world ファイルの trofast_* は段違い棚 (wrc_stair_like_drawer) に「置いてあるだけ」の
+# 自由剛体で、そのままではロボットが取っ手を掴んで引くことができない。理由は 2 つ:
+#
+#   1. trofast_knob/model.usd の /body に ArticulationRootAPI が付いている。
+#      これが付いた物体は PhysX が別アーティキュレーションとして扱い、ロボット
+#      (これもアーティキュレーション) と衝突しなくなる = 指がすり抜ける。
+#      YCB は drop_object() の [obj-fix] で除去しているが、world の <include> 経由で
+#      読まれる trofast はその経路を通らないため付いたままだった。
+#
+#   2. 棚のレール間隔は 0.280 m なのに箱の上縁は 0.300 m あり、左右 10 mm ずつ
+#      最初から食い込んでいる。実物の「縁をレールに引っ掛けて吊る」構造をそのまま
+#      USD にしたためで、剛体シミュレーションでは初期めり込みになる。PhysX が
+#      これを押し出そうとして箱が弾かれたり楔状に噛んで沈み込んだりする。
+#
+# 対策として、棚と箱の間に PrismaticJoint (直動ジョイント) を張り、レールの代わりに
+# ジョイントで運動を拘束する。ジョイントで繋いだ 2 体は collisionEnabled=False により
+# 当たり判定が切れるので、上記 2. のめり込みも同時に解消する。結果として
+# 「手前にだけスライドし、引き切ると止まり、抜け落ちない」本物の引き出しになる。
+DRAWER_FRAME_PATH = '/wrc_stair_like_drawer'
+# 引き出しを何 m 引き出せるか (ジョイントの上限)。箱の奥行きは 0.4235 m。
+DRAWER_PULL_LIMIT = float(os.environ.get('DRAWER_PULL_LIMIT', '0.30'))
+# 引き出しの粘性抵抗 [N/(m/s)]。大きいほど重い引き心地になる。0 で無抵抗。
+# 指の把持力 (hsr.py の FINGER_MAX_FORCE=10) で引ける範囲に収めること。
+DRAWER_DAMPING = float(os.environ.get('DRAWER_DAMPING', '15.0'))
+# 粘性抵抗が出せる力の上限 [N]。引き出しを止める力ではなく減衰の頭打ち。
+DRAWER_DAMPING_MAX_FORCE = float(os.environ.get('DRAWER_DAMPING_MAX_FORCE', '200.0'))
+# 0 にすると引き出し化を丸ごと止めて従来の「置いてあるだけの箱」に戻せる。
+DRAWER_JOINTS_ENABLED = os.environ.get('DRAWER_JOINTS', '1') != '0'
+
+# 引き出しにした箱の /body パス。[recol] の対象外にするために覚えておく
+# ([recol] は setRigidBody で剛体を作り直すため、張ったジョイントが壊れる)。
+_drawer_body_paths = []
+
+
+def _strip_articulation_root(prim):
+    """prim 以下の ArticulationRootAPI を外して「ただの剛体」に戻す。
+
+    drop_object() の [obj-fix] と同じ処理。付いたままだとロボットの指がすり抜ける。
+    """
+    for p in Usd.PrimRange(prim):
+        if p.HasAPI(UsdPhysics.ArticulationRootAPI):
+            p.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+            print('[drawer] removed ArticulationRootAPI from %s' % p.GetPath(),
+                  flush=True)
+        if p.HasAPI(PhysxSchema.PhysxArticulationAPI):
+            p.RemoveAPI(PhysxSchema.PhysxArticulationAPI)
+
+
+def _setup_drawers():
+    """段違い棚と trofast_* を PrismaticJoint で繋いで引き出しにする。"""
+    _stage = omni.usd.get_context().get_stage()
+    frame = _stage.GetPrimAtPath(DRAWER_FRAME_PATH)
+    frame_link = _stage.GetPrimAtPath(DRAWER_FRAME_PATH + '/link')
+    if not frame.IsValid() or not frame_link.IsValid():
+        # この world に段違い棚が無い (別アリーナ) なら何もしない。
+        return
+
+    # 棚もアーティキュレーションを外して素の剛体に戻したうえで kinematic にする。
+    # <static> により world への FixedJoint は張られているが、それだけだと剛体
+    # (mass 1kg) のままなので引き出しを引く反力で棚が揺れる。kinematic にすれば
+    # 完全に不動のアンカーになり、ジョイントの相手として安定する。
+    _strip_articulation_root(frame)
+    UsdPhysics.RigidBodyAPI.Apply(frame_link).CreateKinematicEnabledAttr(True)
+
+    frame_inv = UsdGeom.Xformable(frame_link).ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()).GetInverse()
+
+    for name in model_names:
+        if not name.startswith('trofast'):
+            continue
+        root = _stage.GetPrimAtPath('/' + name)
+        body_path = '/' + name + '/body'
+        body = _stage.GetPrimAtPath(body_path)
+        if not root.IsValid() or not body.IsValid():
+            print('[drawer] skip %s (no /body prim)' % name, flush=True)
+            continue
+
+        # 1. 指がすり抜ける原因の ArticulationRootAPI を外す。
+        _strip_articulation_root(root)
+
+        # 2. 棚に対する箱の現在の相対姿勢を測り、そこをジョイント原点 (= 閉じた状態)
+        #    にする。world ファイルに書かれた姿勢がそのまま「閉」になるので、
+        #    座標をコードに焼き込まずに済む。
+        body_l2w = UsdGeom.Xformable(body).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default())
+        rel = body_l2w * frame_inv
+        rel_pos = rel.ExtractTranslation()
+        rel_rot = rel.GetOrthonormalized().ExtractRotationQuat()
+
+        # 3. 直動ジョイント。軸は棚ローカルの X = ワールド +Y = 引き出しの手前方向。
+        #    (棚は yaw=90° で置かれ、前面の桟が world の +Y 側にある)
+        joint = UsdPhysics.PrismaticJoint.Define(
+            _stage, Sdf.Path('/' + name + '/drawer_joint'))
+        joint.CreateBody0Rel().SetTargets([DRAWER_FRAME_PATH + '/link'])
+        joint.CreateBody1Rel().SetTargets([body_path])
+        joint.CreateAxisAttr('X')
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(rel_pos))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(rel_rot))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
+        # 0 = 閉じきり、DRAWER_PULL_LIMIT = 引ききり。ここで機械的に止まる。
+        joint.CreateLowerLimitAttr(0.0)
+        joint.CreateUpperLimitAttr(DRAWER_PULL_LIMIT)
+        # 棚と箱の当たり判定を切る (既定でも False だが、レールとの初期めり込みを
+        # 確実に無効化したいので明示する)。動きはジョイントが拘束するので、
+        # 当たり判定を切っても箱が棚をすり抜けて落ちることはない。
+        joint.CreateCollisionEnabledAttr(False)
+
+        # 4. 粘性抵抗。これが無いと引いた勢いでストッパーに激突して跳ね返る。
+        #    stiffness=0 なので「戻ろうとする力」は働かず、引いた位置で止まる。
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), 'linear')
+        drive.CreateTypeAttr('force')
+        drive.CreateStiffnessAttr(0.0)
+        drive.CreateDampingAttr(DRAWER_DAMPING)
+        drive.CreateTargetVelocityAttr(0.0)
+        drive.CreateMaxForceAttr(DRAWER_DAMPING_MAX_FORCE)
+
+        # 5. 掴んで静止すると眠ってしまい、次に押しても反応しなくなるのを防ぐ
+        #    ([recol] が同じことをしているが、引き出しは [recol] 対象外にするため)。
+        _rb = PhysxSchema.PhysxRigidBodyAPI.Apply(body)
+        _rb.CreateDisableGravityAttr(False)
+        _rb.CreateSleepThresholdAttr(0.0)
+
+        _drawer_body_paths.append(body_path)
+        print('[drawer] %s -> prismatic joint (0..%.2f m, damping=%.1f)'
+              % (name, DRAWER_PULL_LIMIT, DRAWER_DAMPING), flush=True)
+
+
+if DRAWER_JOINTS_ENABLED:
+    try:
+        _setup_drawers()
+    except Exception as _e:
+        # 引き出しが作れなくてもシミュレータ自体は起動させる (実習を止めない)。
+        print('[drawer] setup failed: %r' % _e, flush=True)
+else:
+    print('[drawer] DRAWER_JOINTS=0 のため引き出し化をスキップ', flush=True)
 
 
 def _subtree_has_rigid_body(prim):
@@ -334,11 +731,13 @@ def drop_object(gazebo_name, name, x, y, z, yaw=0.0, roll=0.0, pitch=0.0):
     # まとめて "_" に置換し、1 階層の安全な prim 名にする。
     safe_name = gazebo_name.replace('-', '_').replace('/', '_')
     stage_path = f'/{safe_name}'
-    # name は usd/wrs_models/ 内のフォルダ名 (例: 'ycb_011_banana')。
-    # この実習構成では物体は YCB オブジェクトのみを使う。
+    # name は usd/wrs_models/ または usd/unknown_objects/ 内のフォルダ名。
+    # 例: 'ycb_011_banana', 'logitech_m310_mouse'
     model_candidates = [
         os.path.join(model_root, name, 'model.usd'),
+        os.path.join(unknown_object_root, name, 'model.usd'),
         '/app/usd/wrs_models/' + name + '/model.usd',
+        '/app/usd/unknown_objects/' + name + '/model.usd',
     ]
     model_path = next((p for p in model_candidates if os.path.exists(p)), None)
     if model_path is None:
@@ -404,31 +803,10 @@ def drop_object(gazebo_name, name, x, y, z, yaw=0.0, roll=0.0, pitch=0.0):
         print('[obj-fix] err %r' % _e, flush=True)
 
     model_names.append(gazebo_name)
+    _spawn_root_paths.append(stage_path)
 
-    # reset_world 用: この物体の初期姿勢を記録する。剛体 (RigidBodyAPI) が付いた
-    # prim を subtree から探し、その「合成済みワールド変換」を保存する。ワールド変換で
-    # 持つことで Y-up の rotateX(90) 補正や YCB の /body 内部オフセットが自動で正しく
-    # 反映され、reset 時に dc.get_rigid_body(body_path) でそのまま戻せる。
-    try:
-        _rb_prim = next(
-            (p for p in Usd.PrimRange(dropped_prim)
-             if p.HasAPI(UsdPhysics.RigidBodyAPI)),
-            None,
-        )
-        if _rb_prim is not None:
-            _m = UsdGeom.Xformable(_rb_prim).ComputeLocalToWorldTransform(
-                Usd.TimeCode.Default())
-            _t = _m.ExtractTranslation()
-            _q = _m.GetOrthonormalized().ExtractRotationQuat()
-            _qi = _q.GetImaginary()
-            _spawn_initial_states.append({
-                'body_path': str(_rb_prim.GetPath()),
-                'p': (_t[0], _t[1], _t[2]),
-                'q': (_q.GetReal(), _qi[0], _qi[1], _qi[2]),  # (w, x, y, z)
-            })
-    except Exception as _e:
-        print('[reset_world] spawn pose capture failed for %s: %r' %
-              (gazebo_name, _e), flush=True)
+    # reset_world 用: この物体の初期姿勢を記録する。
+    _capture_spawn_rigid_state(dropped_prim, gazebo_name)
 
     return model_path
 
@@ -437,8 +815,9 @@ def drop_object(gazebo_name, name, x, y, z, yaw=0.0, roll=0.0, pitch=0.0):
 object_placement.apply_placements(world_file, drop_object)
 
 # placement.yaml の people: セクションに従って「人」を配置する。
-# この実習構成では people は空 (list: []) にしてあるので何も置かれない
-# (呼び出し自体は残してあり、設定に人を書けば動く)。
+# 既定では people.list が空なので何も置かれない (呼び出しは常に残す)。
+# 人モデル/モーションは usd/isaac_offline/ に同梱済みなので、placement.yaml に
+# 人を書けばネット無しでそのまま出せる。
 # 戻り値: (配置人数, ループ開始秒, ループ終了秒)。
 _num_people, _people_loop_start, _people_loop_end = people_spawn.spawn_people(
     assets_root_path, kit
@@ -475,6 +854,24 @@ if _spawn_path is not None:
     print(f'[hsr] spawn from {_spawn_path} (robot:): {_robot_spawn}')
 else:
     print(f'[hsr] placement.yaml が無いのでフォールバック値を使用: {_robot_spawn}')
+
+# スポーン姿勢は odom (ひいては map) 座標の原点そのもの (scripts/hsr.py:3243)。
+# 原点からずれていると、placement.yaml に書く world 座標と、ナビゲーションに
+# 渡す map 座標が、そのずれの分だけ食い違う。黙って壊れると原因が分からない
+# ので、はっきり警告する。位置を変えたいときは部屋 (worlds/carrobo.world) の
+# ほうを動かして、スタート地点が原点に来るようにすること。
+if max(abs(_robot_spawn['x']), abs(_robot_spawn['y']),
+       abs(_robot_spawn['yaw'])) > 1e-6:
+    print(
+        '[hsr] WARNING: robot: が原点 (0, 0, 0) ではありません '
+        f"(x={_robot_spawn['x']}, y={_robot_spawn['y']}, "
+        f"yaw={_robot_spawn['yaw']}).\n"
+        '[hsr]          odom / map 座標が world 座標とこの分ずれます。'
+        '絶対座標のナビゲーションを使うなら\n'
+        '[hsr]          robot: を (0, 0, 0) に戻し、代わりに '
+        'worlds/carrobo.world 側を平行移動してください。',
+        flush=True,
+    )
 
 # ロボットは HSR-B (hsrb) 固定。
 hsr_stage_path = '/hsrb'
@@ -520,26 +917,40 @@ for i in range(len(contact_links)):
     )
 
 
-actor_to_body_name_cache = {}
+actor_to_body_path_cache = {}
 prev_contact = None
+
+
+def _actor_body_path(actor):
+    try:
+        return actor_to_body_path_cache[actor]
+    except KeyError:
+        path = str(PhysicsSchemaTools.intToSdfPath(actor))
+        actor_to_body_path_cache[actor] = path
+        return path
 
 
 def contact_report_event(ch, cd):
     global prev_contact
     for c in ch:
-        try:
-            body1 = actor_to_body_name_cache[c.actor1]
-        except KeyError:
-            body1 = str(PhysicsSchemaTools.intToSdfPath(
-                c.actor1)).split('/')[1]
-            actor_to_body_name_cache[c.actor1] = body1
-        if body1 != 'background':
-            if prev_contact != body1:
-                print(f'Contact {body1}')
-                prev_contact = body1
-        # 壁 (wall_*) にぶつかったら衝突検出トピックに知らせる
-        # (競技の Hit 判定と同じ仕組み)。
-        if body1.startswith('wall_'):
+        path0 = _actor_body_path(c.actor0)
+        path1 = _actor_body_path(c.actor1)
+        robot0 = path0 == '/hsrb' or path0.startswith('/hsrb/')
+        robot1 = path1 == '/hsrb' or path1.startswith('/hsrb/')
+
+        # PhysX の購読はシーン全体の接触を返す。従来は actor1 だけを見て
+        # wall と World (床) の常時接触までロボットの衝突として通知していた。
+        # ロボットが当事者でない接触と、ロボット内部の自己接触は無視する。
+        if robot0 == robot1:
+            continue
+        other_path = path1 if robot0 else path0
+        body_name = other_path.strip('/').split('/')[0]
+        if body_name != 'background' and prev_contact != body_name:
+            print(f'Contact {body_name}')
+            prev_contact = body_name
+        # 壁 (wall_*) にロボット自身がぶつかった場合だけ衝突検出トピックへ
+        # 知らせる (競技の Hit 判定と同じ仕組み)。
+        if body_name.startswith('wall_'):
             collision_detect_pub.publish(std_msgs.msg.Bool(data=True))
 
 
@@ -560,6 +971,10 @@ kit.set_setting('/physics/updateToUsd', True)
 kit.update()
 _hsr.onsimulationstart(simulation_context)
 simulation_context.initialize_physics()
+# reset_world 用: 物理が 1 ステップも進んでいない今 (= placement.yaml / world ファイル
+# どおりの姿勢) の xformOp を控える。この後に GUI で prim を動かしても、リセットで
+# ここに戻せるようになる。play() より後だと物体が落ち始めた姿勢を拾ってしまう。
+_capture_manual_reset_targets()
 omni.timeline.get_timeline_interface().play()
 
 # 人を配置したときだけアニメーションをループ再生する設定にする。
@@ -610,6 +1025,13 @@ if TASK_TIME > 0:
     _recorder = arena_cameras.ArenaRecorder(
         TASK_TIME, center_x=_floor_cx, center_y=_floor_cy)
     _recorder.setup()
+
+# 調整モードなら同じカメラを作るだけ (録画なし・時間制限なし)。
+_tuner = None
+if CAMERA_TUNE:
+    _tuner = arena_cameras.ArenaCameraTuner(
+        center_x=_floor_cx, center_y=_floor_cy)
+    _tuner.setup()
 
 
 # simulate gazebo ros APIs required for task evaluators
@@ -773,19 +1195,29 @@ if _lidar_prim.IsValid():
         _draw_attr.Set(False)
         print(f'[sample-ros] disable showing lidar beam: {_lidar_path}')
 
+_physics_step_index = 0
 while kit.is_running():
     # Run with a fixed step size
+    _render_this_step = (_physics_step_index % RENDER_EVERY_N_STEPS == 0)
     if _num_people > 0:
         # 人 (UsdSkel) のアニメーションは kit.update() を回さないと評価されない。
         # ただし step(render=True) は内部で描画するので、その後に kit.update()
         # を足すと「1 コマで 2 回描画」になりレンダラが不安定になる
         # (X 接続断・セグフォルトの原因)。そこで物理ステップは描画なし
         # (render=False) にし、描画とアニメ評価は kit.update() の 1 回に任せる。
+        # その kit.update() も RENDER_EVERY_N_STEPS で間引く。以前は毎ステップ
+        # 呼んでいたため、人がいるシーンだけ 60 Hz 描画になって間引き設定が丸ごと
+        # 無視され、RTF が大きく落ちていた。アニメ評価も同じ間引きになる
+        # (既定 2 なら 30 Hz) が、見た目には分からない。
         simulation_context.step(render=False)
-        kit.update()
+        if _render_this_step:
+            kit.update()
     else:
-        # 人が居ないときは従来どおり (描画つき物理ステップのみ)。
-        simulation_context.step(render=True)
+        # 物理と全身制御は 60 Hz のまま。Kit のビューポートとカメラのレンダープロダクトを
+        # 同じ 60 Hz で描くと sim 時間が実時間に対して大きく遅れるので、N ステップに
+        # 1 回だけ描く。
+        simulation_context.step(render=_render_this_step)
+    _physics_step_index += 1
     try:
         _hsr.step()
     except Exception:
@@ -810,9 +1242,22 @@ while kit.is_running():
 
             traceback.print_exc()
 
+    # --- 調整モード: GUI で動かしたカメラの値を recordings/tune/ に書き出す ---
+    if _tuner is not None:
+        try:
+            _tuner.step()
+        except Exception:
+            import traceback
+
+            traceback.print_exc()
+
     # --- reset_world: サービス要求があれば物理ステップ間でここで適用する ---
     if _reset_requested:
         try:
+            # 先に USD の姿勢 (手で動かした静的家具・人・物体の親 Xform) を戻し、
+            # その後で _reset_objects() が動的剛体のワールド姿勢を確定させる。
+            # 逆順にすると親 Xform の復元が剛体のワールド姿勢をずらしてしまう。
+            _restore_manual_xforms()
             _reset_objects()
             _hsr.reset_to_spawn(
                 _robot_spawn['x'], _robot_spawn['y'], _robot_spawn['yaw'])
@@ -844,6 +1289,13 @@ while kit.is_running():
             for _p in list(_st4.Traverse()):
                 _ps = str(_p.GetPath())
                 if _ps.startswith('/hsrb'):
+                    continue
+                # 引き出し (PrismaticJoint を張った trofast) は除外する。
+                # setRigidBody は PhysX の剛体を作り直すため、張ったジョイントが
+                # 外れて引き出しが落ちる。引き出しは _setup_drawers() の時点で
+                # ArticulationRootAPI を外し済み ([recol] が直したかった「指が
+                # すり抜ける」原因そのもの) なので、再登録しなくてよい。
+                if _ps in _drawer_body_paths:
                     continue
                 # /body (YCB/焼き込み) と、生オブジェクトの spawn root
                 # (_runtime_rigid_object_paths に記録) の両方を再登録対象にする。

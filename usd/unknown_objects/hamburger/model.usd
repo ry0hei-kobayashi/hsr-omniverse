@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "Object"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Object"
+{
+    # The USDZ source is Y-up and authored in centimetres.  Keep the source
+    # untouched and adapt it to Isaac Sim's Z-up, metre-based world here.
+    def Xform "Model" (
+        prepend references = @./source.usdc@</scene>
+    )
+    {
+        double xformOp:rotateX = 90
+        float3 xformOp:scale = (0.01, 0.01, 0.01)
+        uniform token[] xformOpOrder = ["xformOp:rotateX", "xformOp:scale"]
+    }
+}

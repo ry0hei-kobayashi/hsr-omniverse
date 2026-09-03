@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import importlib.util
 
 import xacro
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node, SetParameter
 from launch_xml.launch_description_sources import XMLLaunchDescriptionSource
@@ -41,6 +43,13 @@ def declare_arguments():
             description='Launch the MoveIt RViz2 on the Isaac Sim (ros2 container) side.',
         )
     )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'use_grasp_tf',
+            default_value='true',
+            description='Broadcast /grasp_detector_node/result poses as TF frames for RViz.',
+        )
+    )
     # テレオペ "ロジック本体"(joystick_control + pseudo controllers)を Sim 側で起動するか。
     # 既定 true: 実機ではこれらがロボットオンボードで常時動くため、その代わりである Sim
     # 側で常時上げておく。前半(joy_node + teleop_steel_series)は Singularity 側 bringup の
@@ -50,6 +59,18 @@ def declare_arguments():
             'use_teleop',
             default_value='true',
             description='Launch joystick teleop logic (joystick_control + pseudo controllers).',
+        )
+    )
+    # RGB-D の compressed/compressedDepth を作る中継ノードを起動するか。既定 true。
+    # Isaac は raw の Image しか出さないが、実機の HSR は image_transport 経由で
+    # /compressed・/compressedDepth も出す。消費側 (hma_pcl_reconst2 の use_compressed=true,
+    # openmm/mmpose 等) はそちらを購読するので、sim でも同じ topic 構成を再現する。
+    # これを false にすると /head_rgbd_sensor/reconsted/points が出なくなる。
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'use_rgbd_republisher',
+            default_value='true',
+            description='Publish compressed RGB-D topics (pcl_reconst / openmm) via one republisher.',
         )
     )
     return declared_arguments
@@ -77,6 +98,76 @@ def render_xacro_and_launch_robot_state_publisher(context: LaunchContext, args: 
             ],
             remappings=[('joint_states', '/whole_body/joint_states')],
             output={'both': 'log'},
+        )
+    ]
+
+
+def launch_moveit_rviz(context: LaunchContext, args: dict):
+    moveit_share = get_package_share_directory('hsrb_moveit_config')
+    description_package = context.perform_substitution(
+        args['description_package'])
+    description_file = context.perform_substitution(args['description_file'])
+
+    description_module_path = os.path.join(
+        moveit_share, 'launch', 'robot_description.py')
+    spec = importlib.util.spec_from_file_location(
+        '_hsrb_moveit_robot_description', description_module_path)
+    description_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(description_module)
+    robot_description = {
+        'robot_description': description_module.parse(
+            description_package, description_file)
+    }
+
+    def load_text(relative_path):
+        with open(os.path.join(moveit_share, relative_path), 'r') as stream:
+            return stream.read()
+
+    def load_yaml(relative_path):
+        with open(os.path.join(moveit_share, relative_path), 'r') as stream:
+            return yaml.safe_load(stream)
+
+    robot_description_semantic = {
+        'robot_description_semantic': load_text('config/hsrb.srdf')
+    }
+    ompl_planning_pipeline_config = {
+        'move_group': {
+            'planning_plugin': 'ompl_interface/OMPLPlanner',
+            'request_adapters': ' '.join([
+                'default_planner_request_adapters/AddTimeOptimalParameterization',
+                'default_planner_request_adapters/FixWorkspaceBounds',
+                'default_planner_request_adapters/FixStartStateBounds',
+                'default_planner_request_adapters/FixStartStateCollision',
+                'default_planner_request_adapters/FixStartStatePathConstraints',
+            ]),
+            'start_state_max_bounds_error': 0.1,
+        }
+    }
+    ompl_planning_pipeline_config['move_group'].update(
+        load_yaml('config/ompl_planning.yaml'))
+
+    return [
+        Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            output='screen',
+            parameters=[
+                robot_description,
+                robot_description_semantic,
+                ompl_planning_pipeline_config,
+                load_yaml('config/kinematics.yaml'),
+                {'use_sim_time': True},
+            ],
+            arguments=[
+                '-d', os.path.join(moveit_share, 'config', 'moveit.rviz')
+            ],
+            respawn=True,
+            respawn_delay=2.0,
+            additional_env={
+                '__GLX_VENDOR_LIBRARY_NAME': 'nvidia',
+                'QT_X11_NO_MITSHM': '1',
+            },
         )
     ]
 
@@ -163,10 +254,18 @@ def generate_launch_description():
                 ]),
                 launch_arguments={
                     'use_sim_time': 'true',
-                    'use_rviz': LaunchConfiguration('use_rviz'),
+                    # RViz is launched below with respawn enabled so a transient
+                    # GL initialization failure cannot remove the planning UI.
+                    'use_rviz': 'false',
                 }.items(),
             ),
         ]
+    )
+
+    moveit_rviz = OpaqueFunction(
+        function=launch_moveit_rviz,
+        args=[args],
+        condition=IfCondition(LaunchConfiguration('use_rviz')),
     )
 
     # task_evaluators = GroupAction(
@@ -212,6 +311,31 @@ def generate_launch_description():
 
     launch_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # RGB-D の compressed/compressedDepth を作る中継ノード。入力(生Image)→出力
+    # (CompressedImage) のマッピングはスクリプト側 DEFAULT_MAPPINGS に集約してあり、
+    # 実在する入力だけが流れる(無い入力は無出力)。
+    local_rgbd_republisher = os.path.join(
+        os.path.dirname(launch_dir),
+        'scripts',
+        'rgbd_republisher.py',
+    )
+    rgbd_republisher_script = (
+        local_rgbd_republisher
+        if os.path.exists(local_rgbd_republisher)
+        else '/rgbd_republisher.py'
+    )
+    rgbd_republisher = ExecuteProcess(
+        cmd=[
+            'python3',
+            rgbd_republisher_script,
+            '--ros-args',
+            '-p',
+            'use_sim_time:=true',
+        ],
+        output='screen',
+        condition=IfCondition(args['use_rgbd_republisher']),
+    )
+
     laser_scan_matcher = Node(
         package='ros2_laser_scan_matcher',
         executable='laser_scan_matcher',
@@ -254,6 +378,18 @@ def generate_launch_description():
         additional_env={'HSR_ROS_VERSION': '2'},
     )
 
+    grasp_tf_broadcaster = ExecuteProcess(
+        cmd=[
+            'python3',
+            '/examples/grasp_tf_broadcaster.py',
+            '--ros-args',
+            '-p',
+            'use_sim_time:=true',
+        ],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('use_grasp_tf')),
+    )
+
     # Isaac の真値odom(hsr.py で wheel_odom を物理真値で上書き済み)を TF/計画に使うため、
     # 起動後に odometry_switcher を wheel_odom へ切り替える。既定の laser_odom は壁の少ない
     # 疎な環境でスキャンマッチングが破綻し odom が飛ぶため、真値の wheel を使う。
@@ -273,6 +409,7 @@ def generate_launch_description():
 
     nodes = [
         relay_node,
+        rgbd_republisher,
         laser_scan_matcher,
         reset_world_matcher_helper,
         sensor_frames,
@@ -280,6 +417,8 @@ def generate_launch_description():
         robot_state_publisher,
         common,
         moveit,
+        moveit_rviz,
+        grasp_tf_broadcaster,
         odom,
         switch_odom_to_wheel,
         teleop,

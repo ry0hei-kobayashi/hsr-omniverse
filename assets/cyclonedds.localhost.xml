@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ホスト内だけで DDS を閉じる設定 (loopback 限定)。
+
+  なぜ必要か:
+    既定の cyclonedds.xml は <NetworkInterface autodetermine="true"/> なので、
+    Cyclone は lo ではなく物理NIC (enp3s0 等) を選び、さらに
+    <AllowMulticast>default</AllowMulticast> は有線NICでは実質 true になるため
+    「ユーザデータもマルチキャスト送信」になる。
+    Isaac Sim も ROS 2 ノードも全部同じホスト上 (compose は network_mode: host) なのに、
+    点群・画像が 239.255.0.1 宛で物理NICから LAN へ出て行く。
+    実測: enp3s0 の送信 ~100 Mbps が常時、その 99.5% がマルチキャスト。
+    家庭用/会場のルータは IGMP snooping が効かずこれを Wi-Fi へフラッディングし、
+    Wi-Fi はマルチキャストを最低基本レートで送るので AP の airtime が飽和する
+    (実測で Wi-Fi が 500 Mbps -> 50 Mbps に低下)。
+
+  使い方 (既定の cyclonedds.xml は残してあるので起動時に切り替える):
+    make up localhost
+    ※ CYCLONEDDS_URI は Makefile が組み立てるので手打ちしないこと。
+      打ち間違えても Cyclone は警告1行で先へ進み、最終的に Isaac が
+      segfault するという分かりにくい落ち方をする。
+    Apptainer 側 (hma2_ws) からは
+    source /home/roboworks/hsr-omniverse/scripts/isaac_localhost_mode.sh [ROS_DOMAIN_ID]
+    ※ コンテナと Apptainer の両方に設定しないと漏洩は止まらない。
+
+  複数PCで ROS 通信する必要が出たときは、この設定は使えない。
+  既定の cyclonedds.xml に戻したうえで <AllowMulticast>spdp</AllowMulticast>
+  (探索のみマルチキャスト / データはユニキャスト) にし、FragmentSize を
+  1400B 以下へ下げ、IGMP snooping 対応のマネージドスイッチを使うこと。
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config
+              https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <!-- lo に固定。lo は MULTICAST フラグを持たない (<LOOPBACK,UP,LOWER_UP>) ので
+           multicast="false" にし、探索は下の <Peers> によるユニキャストで行う。
+           `ip link set lo multicast on` のような root 権限の細工は不要。 -->
+      <Interfaces>
+        <NetworkInterface name="lo" priority="default" multicast="false"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <EnableMulticastLoopback>false</EnableMulticastLoopback>
+      <MaxMessageSize>65500B</MaxMessageSize>
+      <!-- lo は MTU 65536 なので 4000B でも IP フラグメントされない -->
+      <FragmentSize>4000B</FragmentSize>
+    </General>
+    <Discovery>
+      <!-- マルチキャストを切った代わりに localhost へユニキャストで探索する -->
+      <Peers>
+        <Peer Address="localhost"/>
+      </Peers>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <!-- Isaac + HSR フルスタック + RViz/MoveIt で participant は実測 60 程度。
+           上限に当たると後発ノードが参加できないので余裕を持たせる。 -->
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+    </Discovery>
+    <Internal>
+      <SocketReceiveBufferSize min="100MB"/>
+      <SocketSendBufferSize min="100MB"/>
+      <Watermarks>
+        <WhcHigh>50MB</WhcHigh>
+      </Watermarks>
+    </Internal>
+  </Domain>
+</CycloneDDS>

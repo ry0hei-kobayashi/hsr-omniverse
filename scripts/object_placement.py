@@ -2,7 +2,7 @@
 # Copyright (c) 2025
 # All rights reserved.
 """
-object_placement: configs/placement.yaml に従って家具の上に物体を配置する。
+object_placement: 選択されたplacement YAMLに従って家具や床へ物体を配置する。
 
 generate_wrs_task のランダム配置を「置き換える」モジュール。
 world ファイルから各家具 (unit_box) の天板の高さを計算し、YAML で指定された
@@ -32,10 +32,15 @@ import yaml
 # 設定ファイルの場所
 # ============================================================
 # デフォルトは /app/configs/placement.yaml (docker-compose で bind mount)。
-# 環境変数 PLACEMENT_CONFIG で上書き可能。
+# 物体配置だけを別ファイルへ切り替える場合は OBJECT_PLACEMENT_CONFIG を使う。
+# 従来の PLACEMENT_CONFIG も後方互換として残す。
 
 DEFAULT_CONFIG_PATH: str = "/app/configs/placement.yaml"
-CONFIG_PATH: str = os.environ.get("PLACEMENT_CONFIG", DEFAULT_CONFIG_PATH)
+CONFIG_PATH: str = (
+    os.environ.get("OBJECT_PLACEMENT_CONFIG")
+    or os.environ.get("PLACEMENT_CONFIG")
+    or DEFAULT_CONFIG_PATH
+)
 
 
 def log(message: str) -> None:
@@ -98,6 +103,52 @@ KNOWN_MODEL_SURFACES: Dict[str, Dict[str, Any]] = {
     # 部屋の壁 (置く対象ではないが、部屋の外周計算に使う)
     "wrc_frame": {"tops": [], "size": (6.1, 4.2)},
 }
+
+# placement.yaml の furniture: で後から配置する、ローカル USD 家具の置き面。
+# world ファイルの include ではないため、上の KNOWN_MODEL_SURFACES とは別に
+# USD パスごとの実寸を定義する。値は家具 USD の原寸 (scale=1.0) の天板高さ。
+CONFIG_FURNITURE_SURFACES: Dict[str, Dict[str, Any]] = {
+    "restaurant/round_table/model.usd": {
+        "tops": [0.49],
+    },
+}
+
+
+def read_config_furniture(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """placement.yaml の furniture: から物を置ける家具を読む。
+
+    furniture_spawn は world ファイルの読み込み後に家具を生成するため、従来の
+    read_furniture() だけでは furniture: の家具を placements: の置き台にできなかった。
+    ここでは既知のローカル USD 家具について、YAML の位置・向き・scale から
+    object_placement 用の家具情報を作る。
+    """
+    section = cfg.get("furniture") or []
+    items = section.get("list") or [] if isinstance(section, dict) else section
+    result: Dict[str, Dict[str, Any]] = {}
+    for index, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        usd = str(raw.get("usd", ""))
+        spec = CONFIG_FURNITURE_SURFACES.get(usd)
+        if spec is None:
+            continue
+        try:
+            name = str(raw.get("name", f"furniture_{index}"))
+            x = float(raw["x"])
+            y = float(raw["y"])
+            z = float(raw.get("z", 0.0))
+            yaw = math.radians(float(raw.get("yaw", 0.0)))
+            scale = float(raw.get("scale", 1.0))
+        except (KeyError, TypeError, ValueError):
+            log(f"WARNING: furniture[{index}] の配置情報を読めません。スキップ。")
+            continue
+        result[name] = {
+            "x": x,
+            "y": y,
+            "yaw": yaw,
+            "tops": [z + top * scale for top in spec["tops"]],
+        }
+    return result
 
 
 def read_furniture(world_file: str) -> Dict[str, Dict[str, Any]]:
@@ -234,7 +285,9 @@ def _parse_item(item: Any) -> Dict[str, Any]:
         return {"object": item, "dx": 0.0, "dy": 0.0,
                 "yaw": 0.0, "roll": 0.0, "pitch": 0.0, "tier": 0}
     return {
-        "object": item["object"],
+        # compe用ファイルでは場所だけを「スロット」として定義できる。
+        # 通常モードではapply_placements側でobject必須を検証する。
+        "object": item.get("object"),
         "dx": float(item.get("dx", 0.0)),
         "dy": float(item.get("dy", 0.0)),
         "yaw": float(item.get("yaw", 0.0)),
@@ -251,7 +304,7 @@ def _parse_floor_item(item: Any) -> Dict[str, Any]:
     床 (z=0) の絶対座標 x/y を読む。x/y は必須なので辞書で書く必要がある。
     """
     return {
-        "object": item["object"],
+        "object": item.get("object"),
         "x": float(item["x"]),
         "y": float(item["y"]),
         "z": float(item.get("z", 0.0)),  # 省略時 0=床。机の天板等に載せるなら高さを指定。
@@ -281,11 +334,15 @@ def apply_placements(
     placements = objects_cfg.get("placements") or {}
     clearance = float(objects_cfg.get("drop_clearance", 0.05))
 
-    if not placements and not objects_cfg.get("floor"):
-        log("WARNING: 'placements' も 'floor' も空です。配置する物体がありません。")
+    if not placements and not objects_cfg.get("floor") and not objects_cfg.get("obstacles"):
+        log("WARNING: 'placements' / 'floor' / 'obstacles' が空です。配置する物体がありません。")
         return 0
 
     furniture = read_furniture(world_file)
+    # furniture: で定義された既知の USD 家具も placements: の置き台にする。
+    # 同名の world 家具がある場合は、world 側の定義を優先する。
+    for name, info in read_config_furniture(cfg).items():
+        furniture.setdefault(name, info)
 
     requested = 0   # 設定で要求された物体数
     placed = 0      # 実際に配置できた数
@@ -303,6 +360,8 @@ def apply_placements(
         for idx, raw in enumerate(items):
             it = _parse_item(raw)
             obj_name = it["object"]
+            if not isinstance(obj_name, str) or not obj_name:
+                raise ValueError(f'placements.{furn_name}[{idx}] requires "object"')
             dx, dy = it["dx"], it["dy"]
             tier = it["tier"]
 
@@ -344,6 +403,8 @@ def apply_placements(
     for idx, raw in enumerate(floor_items):
         it = _parse_floor_item(raw)
         obj_name = it["object"]
+        if not isinstance(obj_name, str) or not obj_name:
+            raise ValueError(f'objects.floor[{idx}] requires "object"')
         wx, wy = it["x"], it["y"]
         wz = it["z"] + clearance  # z=0 で床、z>0 で机の天板など指定高さの上に落として着地。
 
@@ -361,6 +422,33 @@ def apply_placements(
             placed += 1
         else:
             failed.append(f"floor/{obj_name}")
+
+    # --- 障害物 (得点対象外) ---
+    # 座標形式と物理スポーンは floor と同じだが、設定上の役割を分離する。
+    # Seedごとに Coffee can / Toy airplane のいずれか1個を候補4位置の1つへ置く。
+    obstacle_items = objects_cfg.get("obstacles") or []
+    for idx, raw in enumerate(obstacle_items):
+        it = _parse_floor_item(raw)
+        obj_name = it["object"]
+        if not isinstance(obj_name, str) or not obj_name:
+            raise ValueError(f'objects.obstacles[{idx}] requires "object"')
+        wx, wy = it["x"], it["y"]
+        wz = it["z"] + clearance
+
+        gazebo_name = f"obstacle__{obj_name}__{idx}"
+        requested += 1
+        result = drop_func(
+            gazebo_name,
+            obj_name,
+            wx, wy, wz,
+            yaw=it["yaw"],
+            roll=it["roll"],
+            pitch=it["pitch"],
+        )
+        if result:
+            placed += 1
+        else:
+            failed.append(f"obstacle/{obj_name}")
 
     log(f"placed {placed}/{requested} objects from {path}")
     if failed:

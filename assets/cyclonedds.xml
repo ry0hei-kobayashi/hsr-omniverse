@@ -13,9 +13,10 @@
       <FragmentSize>4000B</FragmentSize>
     </General>
     <Internal>
-      <SocketReceiveBufferSize min="10MB"/>
+      <SocketReceiveBufferSize min="100MB"/>
+      <SocketSendBufferSize min="100MB"/>
       <Watermarks>
-        <WhcHigh>500kB</WhcHigh>
+        <WhcHigh>50MB</WhcHigh>
       </Watermarks>
     </Internal>
   </Domain>

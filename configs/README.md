@@ -7,7 +7,9 @@
 
 | ファイル | 用途 |
 |---|---|
-| [`placement.yaml`](./placement.yaml) | シーン初期配置 (`robot` ロボット位置 / `objects` YCB物体配置) をまとめた設定 |
+| [`placement.yaml`](./placement.yaml) | シーン初期配置 (`robot` ロボット位置 / `objects` YCB物体配置 / `furniture` 家具 / `people` 人) をまとめた設定 |
+| [`placement.compe.yaml`](./placement.compe.yaml) | 競技のObject Listと全Seed共通スポーン位置 |
+| `placement.compe_seed1.yaml` 〜 `placement.compe_seed4.yaml` | `compe_seed=1..4` で選ぶ競技用固定配置 |
 | [`dressing.yaml`](./dressing.yaml) | シーン演出 (床テクスチャ + 周囲背景画像 + 照明) のプリセット定義 |
 
 ## クイックスタート
@@ -18,6 +20,7 @@
 |---|---|
 | ロボットの初期位置を変える | [`placement.yaml`](./placement.yaml) の **`robot:`** (x, y, yaw[rad]) |
 | 家具の上に物体を置く | `placement.yaml` の **`objects.placements:`** |
+| 人 (立っている人 / 手を振る人) を出す | `placement.yaml` の **`people:`** → [下の手順](#人-people-を出す) |
 | 部屋の見た目をプリセットごと切り替える (例: lab → office) | [`dressing.yaml`](./dressing.yaml) の **`defaults.preset:`** |
 | 照明モードを切り替える (例: default → bright) | `dressing.yaml` の **`defaults.lighting:`** |
 | 既存プリセットの値を微調整 (例: 天井灯を強くする) | `dressing.yaml` の **`lighting_presets.<name>:`** や **`dressing_presets.<name>:`** の中の数値 |
@@ -32,7 +35,60 @@ make down
 make up
 ```
 
+競技用配置を反映する場合:
+
+```bash
+make down
+make up localhost compe_seed=1
+```
+
 `down` を先にやるのが大事(`up` だけだと既存コンテナが残っていて Python プロセスが再起動されず、YAML の変更が反映されないことがある)。
+
+## 人 (`people`) を出す
+
+`placement.yaml` の **`people:`** セクションで、部屋に人を立たせられる。
+**既定では出さない** (`list: []`)。出したいときだけ有効にする。
+
+### 出しかた
+
+`placement.yaml` の `people:` を開いて、次の 2 つをする。
+
+1. `list: []` の行を消す
+2. その下の `# list:` から `# motion: stand_idle_wave_loop` までの行頭の `# ` を外す
+
+そのまま `make down && make up` で、立っている人と手を振っている人が 1 人ずつ出る。
+起動ログに `[people] spawned 2/2 people ...` と出れば成功。
+
+### 書きかた
+
+```yaml
+people:
+  list:
+    - name: person_standing   # シーン内の名前 (/World/People/<name>)
+      x: 2.4                  # 位置 (m, world 座標。robot:/objects: と同じ)
+      y: 2.6
+      yaw: 270                # 向き (★度。0=+X, 90=+Y, 180=-X, 270=-Y)
+      motion: stand_idle_loop # 動き (下の表)
+```
+
+| `motion` | 動き |
+|---|---|
+| `stand_idle_loop` | まっすぐ立つ (その場で待つ) |
+| `stand_idle_wave_loop` | 手を振る (立つ→振る→下ろす→立つ の繰り返し) |
+
+この 2 つは人モデルごと [`../usd/isaac_offline/`](../usd/isaac_offline/) に同梱してあるので、
+**ネットに繋がっていなくても動く**。`people_spawn.py` は `Sit` など他の名前も知っているが、
+その USD は同梱していないのでネットが要る。
+
+### 注意
+
+- **`yaw` の単位は「度」**。`furniture:` と同じで、`robot:` の `yaw` (ラジアン) とは違う。
+- **人は当たり判定を持たない**。見た目とアニメーションだけなので、ロボットは人をすり抜ける。
+  経路をふさぐ用途には使えない。
+- **手を上げっぱなしにしたいとき**は `people.loop_window:` (`placement.yaml` にコメントで用意)
+  を使う。`stand_idle_wave_loop` には手を上げたままのクリップが無いので、再生する秒数を
+  「手を振っている区間」だけに絞って上げっぱなしに見せる。
+  ただし再生ヘッドはシーンに 1 本しかないので、**この区間指定は他の人にも同じように効く**。
 
 ## `dressing.yaml` の構造
 

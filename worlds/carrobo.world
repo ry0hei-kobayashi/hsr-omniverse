@@ -2,26 +2,35 @@
 <!--
   carrobo.world : カーロボ実習用の 4部屋 TidyUp アリーナ
 
-  部屋の構造 (壁はすべて高さ 0.6m のきれいな直線壁):
-    - 外周 8.0 x 8.0 m (X: -4〜+4, Y: -4〜+4)
-    - 田の字に 4 部屋 (各 4 x 4 m の正方形)。仕切り壁に幅 1.2m のドア開口
-        x=0 の壁: y -2.6〜-1.4 と y 1.4〜2.6 が開口
-        y=0 の壁: x -2.6〜-1.4 と x 1.4〜2.6 が開口
+  ★ 座標系: ロボットのスタート地点が原点 (0,0)、正面が +X。
+     こうしておくと Isaac のワールド座標と ROS の odom / map 座標が一致し、
+     ここに書いた座標をそのままナビゲーションのゴールに使える。
+     (odom の原点はロボットが起動した姿勢になる。scripts/hsr.py:3243 参照)
 
-      y=+4 ┌───────────┬─┬───────────┐
-           │ Room NW    開  Room NE   │
-           │ 片付け1    口  探索1     │
-      y=0  ├───開口──┼─┼──開口───┤
-           │ Room SW    開  Room SE   │
-           │ 片付け2    口  探索2     │
-      y=-4 └───────────┴─┴───────────┘
-          x=-4         x=0          x=+4
+  部屋の構造 (壁はすべて高さ 0.6m のきれいな直線壁):
+    - 外周 8.0 x 8.0 m (X: 0.4〜8.4, Y: -2.4〜5.6)
+    - 田の字に 4 部屋 (各 4 x 4 m の正方形)。仕切り壁に幅 1.2m のドア開口
+        x=4.4 の壁: y -1.0〜0.2 と y 3.0〜4.2 が開口
+        y=1.6 の壁: x 1.8〜3.0 と x 5.8〜7.0 が開口
+    - 外から入る入口は西壁の 1 箇所: x=0.4, y -0.6〜+0.6 (幅1.2m)
+      ロボットは原点 (0,0) に立ち、+X を向いてこの開口の正面 0.4m にいる
+
+      y=+5.6 ┌───────────┬─┬───────────┐
+             │ Room NW    開  Room NE   │
+             │ 探索1      口  探索2     │
+      y=+1.6 ├───開口──┼─┼──開口───┤
+             │ Room SW    開  Room SE   │
+             │ 片付け1    口  片付け2   │
+      y=-2.4 └───────────┴─┴───────────┘
+            x=0.4       x=4.4        x=8.4
+             ↑
+        ロボット (0,0) から見て、入口はこの西壁の中央
 
   家具 (usd/wrs_models のリアルな USD モデル):
-    - Room NW: 段違い引き出し + trofast / 長机 + トレイ2 + コンテナ2 (片付け先)
-    - Room SW: ビン2 (黒/緑) + 高い机 (+椅子は placement.yaml の furniture:)
-    - Room NE: 本棚 (+ソファ) + 床に散乱物体
-    - Room SE: 長机 (+椅子2) + 緑ビン + 床に散乱物体
+    - Room SW: 段違い引き出し + trofast / 長机 + トレイ2 + コンテナ2 (片付け先)
+    - Room SE: ビン2 (黒/緑) + 高い机 (+椅子は placement.yaml の furniture:)
+    - Room NW: 本棚 (+ソファ) + 床に散乱物体
+    - Room NE: 長机 (+椅子2) + 緑ビン + 床に散乱物体
 
   家具の天板高さ (placement.yaml で使う):
     - wrc_long_table   : 0.40m (1段)
@@ -40,183 +49,183 @@
 
     <!-- ==== 外周の壁 (高さ0.6m, 厚さ0.1m) ==== -->
     <!-- 外から入る入口 (幅1.2m) は 1 箇所:
-           北の壁 x -2.2〜-1.0 (引き出しのある Room NW へ) -->
+           北の壁 x -2.2〜-1.0 (引き出しのある Room SW へ) -->
     <include>
-      <name>wall_north_1</name>
+      <name>wall_west_1</name>
       <uri>model://unit_box</uri>
-      <pose>-3.15 4 0.3 0 0 0</pose>
-      <scale>1.9 0.1 0.6</scale>
+      <pose>0.4 -1.55 0.3 0 0 0</pose>
+      <scale>0.1 1.9 0.6</scale>
       <static>true</static>
     </include>
     <include>
-      <name>wall_north_2</name>
+      <name>wall_west_2</name>
       <uri>model://unit_box</uri>
-      <pose>1.55 4 0.3 0 0 0</pose>
-      <scale>5.1 0.1 0.6</scale>
-      <static>true</static>
-    </include>
-    <include>
-      <name>wall_south</name>
-      <uri>model://unit_box</uri>
-      <pose>0 -4 0.3 0 0 0</pose>
-      <scale>8.2 0.1 0.6</scale>
-      <static>true</static>
-    </include>
-    <include>
-      <name>wall_west</name>
-      <uri>model://unit_box</uri>
-      <pose>-4 0 0.3 0 0 0</pose>
-      <scale>0.1 8.0 0.6</scale>
+      <pose>0.4 3.15 0.3 0 0 0</pose>
+      <scale>0.1 5.1 0.6</scale>
       <static>true</static>
     </include>
     <include>
       <name>wall_east</name>
       <uri>model://unit_box</uri>
-      <pose>4 0 0.3 0 0 0</pose>
-      <scale>0.1 8.0 0.6</scale>
+      <pose>8.4 1.6 0.3 0 0 0</pose>
+      <scale>0.1 8.2 0.6</scale>
+      <static>true</static>
+    </include>
+    <include>
+      <name>wall_south</name>
+      <uri>model://unit_box</uri>
+      <pose>4.4 -2.4 0.3 0 0 0</pose>
+      <scale>8 0.1 0.6</scale>
+      <static>true</static>
+    </include>
+    <include>
+      <name>wall_north</name>
+      <uri>model://unit_box</uri>
+      <pose>4.4 5.6 0.3 0 0 0</pose>
+      <scale>8 0.1 0.6</scale>
       <static>true</static>
     </include>
 
     <!-- ==== 中央の仕切り壁 (x=0, 縦) : 2箇所のドア開口を挟んで3分割 ==== -->
     <include>
-      <name>wall_div_v1</name>
-      <uri>model://unit_box</uri>
-      <pose>0 -3.3 0.3 0 0 0</pose>
-      <scale>0.1 1.4 0.6</scale>
-      <static>true</static>
-    </include>
-    <include>
-      <name>wall_div_v2</name>
-      <uri>model://unit_box</uri>
-      <pose>0 0 0.3 0 0 0</pose>
-      <scale>0.1 2.8 0.6</scale>
-      <static>true</static>
-    </include>
-    <include>
-      <name>wall_div_v3</name>
-      <uri>model://unit_box</uri>
-      <pose>0 3.3 0.3 0 0 0</pose>
-      <scale>0.1 1.4 0.6</scale>
-      <static>true</static>
-    </include>
-
-    <!-- ==== 中央の仕切り壁 (y=0, 横) : 2箇所のドア開口を挟んで3分割 ==== -->
-    <include>
       <name>wall_div_h1</name>
       <uri>model://unit_box</uri>
-      <pose>-3.3 0 0.3 0 0 0</pose>
+      <pose>7.7 1.6 0.3 0 0 0</pose>
       <scale>1.4 0.1 0.6</scale>
       <static>true</static>
     </include>
     <include>
       <name>wall_div_h2</name>
       <uri>model://unit_box</uri>
-      <pose>0 0 0.3 0 0 0</pose>
+      <pose>4.4 1.6 0.3 0 0 0</pose>
       <scale>2.8 0.1 0.6</scale>
       <static>true</static>
     </include>
     <include>
       <name>wall_div_h3</name>
       <uri>model://unit_box</uri>
-      <pose>3.3 0 0.3 0 0 0</pose>
+      <pose>1.1 1.6 0.3 0 0 0</pose>
       <scale>1.4 0.1 0.6</scale>
       <static>true</static>
     </include>
 
-    <!-- ==== Room NW (片付け1): 引き出し + trofast + 長机 (トレイ/コンテナ) ==== -->
+    <!-- ==== 中央の仕切り壁 (y=0, 横) : 2箇所のドア開口を挟んで3分割 ==== -->
+    <include>
+      <name>wall_div_v1</name>
+      <uri>model://unit_box</uri>
+      <pose>4.4 -1.7 0.3 0 0 0</pose>
+      <scale>0.1 1.4 0.6</scale>
+      <static>true</static>
+    </include>
+    <include>
+      <name>wall_div_v2</name>
+      <uri>model://unit_box</uri>
+      <pose>4.4 1.6 0.3 0 0 0</pose>
+      <scale>0.1 2.8 0.6</scale>
+      <static>true</static>
+    </include>
+    <include>
+      <name>wall_div_v3</name>
+      <uri>model://unit_box</uri>
+      <pose>4.4 4.9 0.3 0 0 0</pose>
+      <scale>0.1 1.4 0.6</scale>
+      <static>true</static>
+    </include>
+
+    <!-- ==== Room SW (片付け1): 引き出し + trofast + 長机 (トレイ/コンテナ) ==== -->
     <include>
       <name>wrc_stair_like_drawer</name>
       <uri>model://wrc_stair_like_drawer</uri>
-      <pose>-3.5 3.2 0 0 -0 0</pose>
+      <pose>1.2 -1.9 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
     <include>
       <name>trofast_1</name>
       <uri>model://trofast_knob</uri>
-      <pose>-3.5 2.87 0.1 0 -0 0</pose>
+      <pose>1.53 -1.9 0.1 0 0 1.5708</pose>
     </include>
     <include>
       <name>trofast_2</name>
       <uri>model://trofast_knob</uri>
-      <pose>-3.5 3.2 0.1 0 -0 0</pose>
+      <pose>1.2 -1.9 0.1 0 0 1.5708</pose>
     </include>
     <include>
       <name>trofast_3</name>
       <uri>model://trofast_knob</uri>
-      <pose>-3.5 3.2 0.36 0 -0 0</pose>
+      <pose>1.2 -1.9 0.36 0 0 1.5708</pose>
     </include>
     <include>
       <name>wrc_long_table_0</name>
       <uri>model://wrc_long_table</uri>
-      <pose>-3.55 1.5 0 0 -0 1.57</pose>
+      <pose>2.9 -1.95 0 0 0 3.1416</pose>
       <static>true</static>
     </include>
     <include>
       <name>wrc_tray_1</name>
       <uri>model://wrc_tray</uri>
-      <pose>-3.55 1.05 0.4 0 -0 1.57</pose>
+      <pose>3.35 -1.95 0.4 0 0 3.1416</pose>
     </include>
     <include>
       <name>wrc_tray_2</name>
       <uri>model://wrc_tray</uri>
-      <pose>-3.55 1.35 0.4 0 -0 1.57</pose>
+      <pose>3.05 -1.95 0.4 0 0 3.1416</pose>
     </include>
     <include>
       <name>wrc_container_a</name>
       <uri>model://wrc_container_a</uri>
-      <pose>-3.55 1.6 0.4 0 -0 0</pose>
+      <pose>2.8 -1.95 0.4 0 0 1.5708</pose>
     </include>
     <include>
       <name>wrc_container_b</name>
       <uri>model://wrc_container_b</uri>
-      <pose>-3.55 1.9 0.4 0 -0 0</pose>
+      <pose>2.5 -1.95 0.4 0 0 1.5708</pose>
     </include>
 
-    <!-- ==== Room SW (片付け2): ビン2 + 高い机 + 本棚 ==== -->
+    <!-- ==== Room SE (片付け2): ビン2 + 高い机 + 本棚 ==== -->
     <include>
       <name>wrc_bin_black</name>
       <uri>model://wrc_bin_black</uri>
-      <pose>-3.6 -3.5 0 0 -0 0</pose>
+      <pose>7.9 -2 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
     <include>
       <name>wrc_bin_green</name>
       <uri>model://wrc_bin_green</uri>
-      <pose>-3.6 -3.0 0 0 -0 0</pose>
+      <pose>7.4 -2 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
     <include>
       <name>wrc_tall_table</name>
       <uri>model://wrc_tall_table</uri>
-      <pose>-1.0 -3.4 0 0 -0 0</pose>
+      <pose>7.8 0.6 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
     <include>
       <name>wrc_bookshelf_2</name>
       <uri>model://wrc_bookshelf</uri>
-      <pose>-3.65 -1.5 0 0 -0 1.57</pose>
+      <pose>5.9 -2.05 0 0 0 3.1416</pose>
       <static>true</static>
     </include>
 
-    <!-- ==== Room NE (探索1): 本棚 ==== -->
+    <!-- ==== Room NW (探索1): 本棚 ==== -->
     <include>
       <name>wrc_bookshelf</name>
       <uri>model://wrc_bookshelf</uri>
-      <pose>3.6 2.0 0 0 -0 -1.57</pose>
+      <pose>2.4 5.2 0 0 0 0</pose>
       <static>true</static>
     </include>
 
-    <!-- ==== Room SE (探索2): 長机 + 緑ビン ==== -->
+    <!-- ==== Room NE (探索2): 長机 + 緑ビン ==== -->
     <include>
       <name>wrc_long_table</name>
       <uri>model://wrc_long_table</uri>
-      <pose>2.0 -3.5 0 0 -0 0</pose>
+      <pose>7.9 3.6 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
     <include>
       <name>wrc_bin_green_2</name>
       <uri>model://wrc_bin_green</uri>
-      <pose>3.5 -3.5 0 0 -0 0</pose>
+      <pose>7.9 5.1 0 0 0 1.5708</pose>
       <static>true</static>
     </include>
   </world>

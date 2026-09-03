@@ -1,0 +1,19 @@
+#usda 1.0
+(
+    defaultPrim = "Object"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Object"
+{
+    # スポーン位置・姿勢とは別の子Primで、モデル固有の向き・寸法を補正する。
+    def Xform "Model" (
+        prepend references = @./source.usdc@</scene>
+    )
+    {
+        double xformOp:rotateX = 90
+        float3 xformOp:scale = (0.00015, 0.00015, 0.00015)
+        uniform token[] xformOpOrder = ["xformOp:rotateX", "xformOp:scale"]
+    }
+}

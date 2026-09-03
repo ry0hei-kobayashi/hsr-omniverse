@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "Object"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Object"
+{
+    # スポーン位置・姿勢は親の Object に設定されるため、モデル補正は子Primに置く。
+    # これにより、参照合成時に scale/rotate が親の xformOpOrder で上書きされない。
+    def Xform "Model" (
+        prepend references = @./source.usdc@</scene>
+    )
+    {
+        double xformOp:rotateX = 90
+        float3 xformOp:scale = (0.01, 0.01, 0.01)
+        uniform token[] xformOpOrder = ["xformOp:rotateX", "xformOp:scale"]
+
+        # 配布モデルに含まれる巨大な背景板は、物体の見た目・当たり判定に不要。
+        over "Meshes"
+        {
+            over "Sketchfab_model"
+            {
+                over "_3fa11073d424551acc2e9da1e183705_fbx"
+                {
+                    over "RootNode"
+                    {
+                        over "Cube" (
+                            active = false
+                        )
+                        {
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

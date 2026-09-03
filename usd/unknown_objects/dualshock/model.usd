@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "Object"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Object"
+{
+    # The source is a DualSense model despite the requested asset id being
+    # "dualshock".  It was exported standing on its edge and in arbitrary
+    # Blender units.  Rotate it flat and scale its width to 0.16 m.
+    def Xform "Model" (
+        prepend references = @./source.usdc@</root>
+    )
+    {
+        # -Y is the button side in the source, so -90 degrees leaves the
+        # controls facing upward after the object settles on a Z-up floor.
+        double xformOp:rotateX = -90
+        float3 xformOp:scale = (0.042322755, 0.042322755, 0.042322755)
+        uniform token[] xformOpOrder = ["xformOp:rotateX", "xformOp:scale"]
+
+        # A stray 2.28 m plane was exported about 65 units away from the
+        # controller.  It would corrupt both the bounds and convex collision.
+        over "Plane" (
+            active = false
+        )
+        {
+        }
+
+        # The Blender export also contains a dark environment DomeLight
+        # (root/env_light, using color_0A0A0A.exr).  It is part of the source
+        # asset, not the controller, and would change the lighting of the
+        # entire Isaac Sim scene when this object is referenced.
+        over "env_light" (
+            active = false
+        )
+        {
+        }
+    }
+}

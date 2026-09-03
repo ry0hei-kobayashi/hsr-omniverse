@@ -1,0 +1,167 @@
+# ============================================================
+# 競技用 Object List / 共通スポーン位置
+# ============================================================
+#
+# このファイルは、全Seed共通のObject Listとスポーン位置を管理する正本。
+# 実行時は物体名を固定した configs/placement.compe_seed1.yaml 〜 seed4.yaml を読む。
+#   make up localhost compe_seed=1
+#
+# object_list:
+#   ルール文書の4カテゴリと、実際に読み込むUSDモデル名の対応。
+# floor / placements:
+#   Seed 1〜4で共通の配置スロット。ここでは object を指定しない。
+#
+# 座標・家具名・tier の意味は configs/placement.yaml と同じ。
+
+objects:
+  drop_clearance: 0.1
+
+  object_list:
+    Food:
+      - {name: Cheez-it,       model: ycb_003_cracker_box}
+      - {name: Sugar box,      model: ycb_004_sugar_box}
+      - {name: Tomato can,     model: ycb_005_tomato_soup_can}
+      - {name: Mustard,        model: ycb_006_mustard_bottle}
+      - {name: Tuna can,       model: ycb_007_tuna_fish_can}
+      - {name: Choco box,      model: ycb_008_pudding_box}
+      - {name: Strawberry box, model: ycb_009_gelatin_box}
+      - {name: Spam,           model: ycb_010_potted_meat_can}
+      - {name: Banana,         model: ycb_011_banana}
+      - {name: Strawberry,     model: ycb_012_strawberry}
+      - {name: Apple,          model: ycb_013_apple}
+      - {name: Lemon,          model: ycb_014_lemon}
+      - {name: Peach,          model: ycb_015_peach}
+      - {name: Pear,           model: ycb_016_pear}
+      - {name: Orange,         model: ycb_017_orange}
+      - {name: Plum,           model: ycb_018_plum}
+
+    Shape:
+      - {name: Soccer ball, model: ycb_053_mini_soccer_ball}
+      - {name: Soft ball,   model: ycb_054_softball}
+      - {name: Baseball,    model: ycb_055_baseball}
+      - {name: Tennis ball, model: ycb_056_tennis_ball}
+      - {name: Racquetball, model: ycb_057_racquetball}
+      - {name: Golf ball,   model: ycb_058_golf_ball}
+      - {name: Chain,       model: ycb_059_chain}
+      - {name: Foam brick,  model: ycb_061_foam_brick}
+      - {name: Dice,        model: ycb_062_dice}
+      - {name: Marbles,     model: ycb_063-a_marbles}
+      - {name: Cup,         model: ycb_065-e_cups}
+
+    Kitchen:
+      - {name: Pitcher base,    model: ycb_019_pitcher_base}
+      - {name: Cleanser bottle, model: ycb_021_bleach_cleanser}
+      - {name: Spray bottle,    model: ycb_022_windex_bottle}
+      - {name: Bowl,            model: ycb_024_bowl}
+      - {name: Mug,             model: ycb_025_mug}
+      - {name: Sponge,          model: ycb_026_sponge}
+      - {name: Plate,           model: ycb_029_plate}
+      - {name: Fork,            model: ycb_030_fork}
+      - {name: Spoon,           model: ycb_031_spoon}
+      - {name: Spatula,         model: ycb_033_spatula}
+
+    Task:
+      - {name: Padlock,       model: ycb_038_padlock}
+      - {name: Marker,        model: ycb_040_large_marker}
+      - {name: Clamp medium,  model: ycb_050_medium_clamp}
+      - {name: Clamp large,   model: ycb_051_large_clamp}
+      - {name: Clamp x-large, model: ycb_052_extra_large_clamp}
+      - {name: Wood block,    model: ycb_036_wood_block}
+      - {name: 9-peg,         model: ycb_071_nine_hole_peg_test}
+      - {name: Lego,          model: ycb_073-a_lego_duplo}
+      - {name: Rubiks,        model: ycb_077_rubiks_cube}
+
+    Unknown:
+      - {name: Logitech M310 Mouse, model: logitech_m310_mouse}
+      - {name: Coca-Cola Bottle,    model: coca_cola_bottle}
+      - {name: Hamburger,            model: hamburger}
+      - {name: DualSense Controller, model: dualshock}
+
+    Obstacle:
+      - {name: Coffee can,   model: ycb_002_master_chef_can}
+      - {name: Toy airplane, model: ycb_072-a_toy_airplane}
+
+  # 得点対象22個のうち床に置く14スロット。Seedファイルで object を固定する。
+  floor:
+    # Room NE の長机付近
+    - x: 7.55
+      y: 2.7
+      yaw: 1.57
+    - x: 7.3
+      y: 2.9
+    - x: 7.55
+      y: 3.1
+    - x: 7.3
+      y: 3.3
+    - x: 7.55
+      y: 3.6
+    - x: 7.3
+      y: 3.7
+    - x: 7.55
+      y: 4.0
+    - x: 7.3
+      y: 4.3
+    - x: 7.55
+      y: 4.5
+
+    # Room SE の高い机付近
+    - x: 7.5
+      y: 0.0
+    - x: 7.3
+      y: 0.4
+    - x: 7.5
+      y: 0.7
+    - x: 7.3
+      y: 1.05
+    - x: 7.5
+      y: 1.25
+
+  # 得点対象22個とは別のObstacle Object候補位置。
+  # 各Seedはこの4箇所から1箇所だけを選び、Coffee canまたはToy airplaneを置く。
+  obstacles:
+    - x: 3.3
+      y: -0.4
+    - x: 2.7
+      y: -0.4
+    - x: 3.3
+      y: 0.2
+    - x: 2.7
+      y: 0.2
+
+  # 家具上は8対象スロット＋place棚の見本2個。
+  placements:
+    wrc_long_table:
+      - dx: 0.0
+        dy: -0.1
+      - dx: 0.4
+        dy: 0.05
+      - dx: -0.4
+        dy: 0.05
+
+    wrc_tall_table:
+      - {}
+
+    round_table:
+      - dx: -0.1
+        dy: -0.3
+      - dx: -0.3
+        dy: -0.15
+
+    # place用棚: Food/Taskの見本。得点対象22個には含めない。
+    wrc_bookshelf:
+      - tier: 1
+      - tier: 2
+
+    # pick用棚: 得点対象22個のうち2個を置く。
+    wrc_bookshelf_2:
+      - tier: 1
+      - tier: 2
+
+# round_table は world ファイルではなく placement.yaml の furniture で配置されるため、
+# object_placement.py が天板位置を計算できるよう競技用設定にも同じ情報を持たせる。
+furniture:
+  - usd: restaurant/round_table/model.usd
+    name: round_table
+    x: 5.9
+    y: 3.9
+    scale: 0.85

@@ -17,10 +17,28 @@ services:
       - DISPLAY
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=graphics
+      - __GLX_VENDOR_LIBRARY_NAME=nvidia
+      - QT_X11_NO_MITSHM=1
       - CYCLONEDDS_URI=${CYCLONEDDS_URI:-file:///cyclonedds.xml}
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      # 実習の学生環境 (Singularity: hma_env2) が 26 を既定にしているので合わせる。
+      # 揃っていないと ROS 2 は互いを一切見つけられない。
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-26}
     volumes:
+      # DDS 設定を live マウント。既定は従来どおり /cyclonedds.xml で、
+      # DDS を loopback に閉じたいときは
+      #   make up localhost
+      # で切り替える (再ビルド不要)。理由は assets/cyclonedds.localhost.xml の先頭コメント参照。
+      # ※ イメージに COPY 済みなのは cyclonedds.xml だけ。localhost 版はこの bind mount
+      #    でしか存在しないので、外すと CYCLONEDDS_URI が解決できなくなる。
+      - ../assets/cyclonedds.xml:/cyclonedds.xml:ro
+      - ../assets/cyclonedds.localhost.xml:/cyclonedds.localhost.xml:ro
       - ../launch/hsr.launch.py:/hsr.launch.py:ro
+      - ../scripts/rgbd_republisher.py:/rgbd_republisher.py:ro
+      # 制御指示のサンプルコード (実習用)。編集が即反映されるよう live マウント
+      - ../examples:/examples:ro
+      - ../assets/moveit-no-octomap.rviz:/ws/install/hsrb_moveit_config/share/hsrb_moveit_config/config/moveit.rviz:ro
+      - ../assets/joint_limits-smooth.yaml:/ws/install/hsrb_moveit_config/share/hsrb_moveit_config/config/joint_limits.yaml:ro
+    command: ["ros2", "launch", "/hsr.launch.py", "use_rviz:=${USE_RVIZ:-false}"]
     security_opt:
       - seccomp:unconfined
   cacheproxy:
@@ -51,9 +69,104 @@ services:
       - HSR_ROS_VERSION=2
       # 競技モード: `make up TIME=600` で競技時間 (秒) が渡る。空なら通常モード。
       - TASK_TIME=${TASK_TIME:-}
+      # `make up ... compe_seed=1`: 選択した固定Seedのplacementを読む。
+      - OBJECT_PLACEMENT_CONFIG=${OBJECT_PLACEMENT_CONFIG:-}
+      # カメラ調整モード: `make tune` で 1 が渡る。観戦カメラ4台を作るだけで
+      # 録画も自動終了もせず、GUI で動かした位置を recordings/tune/ に書き出す。
+      - CAMERA_TUNE=${CAMERA_TUNE:-}
+      # アタッチ把持(吸い付き)。既定は無効で、物理接触(摩擦)のみで把持する。
+      # 確実に保持させたいときだけ `make up GRASP=1` で有効化する。
+      - GRASP_ATTACH=${GRASP_ATTACH:-0}
+      # reset_world の姿勢キャプチャをスポーン root のサブツリー全体に広げる。
+      # 0 にすると root のみの旧挙動 (モデル内部のメッシュを手で動かすと戻らない)。
+      - RESET_DEEP_CAPTURE=${RESET_DEEP_CAPTURE:-1}
+      # MoveIt whole_body の台車追従。必要なら make up BASE_TRAJ_P_GAIN=1.0 などで調整。
+      - BASE_DIRECT_DRIVE=${BASE_DIRECT_DRIVE:-1}
+      # 車輪に力を掛けて台車を動かすのをやめ、速度指令から次フレームの位置と向きを
+      # 計算して kinematic anchor をそこへ直接追従させる。回転指令に並進が混ざる/
+      # 車輪が滑る/停止後に揺り戻す、といった現象をまとめて断つための方式。
+      # 0 にすると平面ジョイント上の動剛体へ速度を書く従来経路に戻る (切り分け用)。
+      - BASE_KINEMATIC_DRIVE=${BASE_KINEMATIC_DRIVE:-1}
+      # 位置追従方式では PhysX の接触拘束が台車を止められない (anchor が実効的に
+      # 無限質量になるため)。そこで目標位置を進める前に台車外周の球をスイープし、
+      # 障害物を貫通する分だけ前進量を削る。0 にすると壁をすり抜ける。
+      - BASE_KINEMATIC_COLLISION=${BASE_KINEMATIC_COLLISION:-1}
+      # スイープに使う台車半径 [m] / 球の中心高さ [m] / 手前に残す余裕 [m]。
+      - BASE_COLLISION_RADIUS=${BASE_COLLISION_RADIUS:-0.24}
+      - BASE_COLLISION_HEIGHT=${BASE_COLLISION_HEIGHT:-0.25}
+      - BASE_COLLISION_MARGIN=${BASE_COLLISION_MARGIN:-0.01}
+      # anchor の動かし方。usd = USD の xform を書いて PhysX に kinematic target
+      # として解釈させる。PhysX が「1ステップかけて目標へ動く」扱いにするので
+      # anchor 自身が速度を持ち、FixedJoint で繋がった articulation も滑らかに
+      # 運ばれる。dc = dc.set_rigid_body_pose で瞬間移動 (従来動作)。dc だと毎
+      # ステップ位置が跳ぶだけで anchor の速度は 0 のままなので、FixedJoint が
+      # 位置誤差をインパルスで埋め、その衝撃で arm_flex が落ちる (実測 1.493 rad)。
+      - BASE_KINEMATIC_ANCHOR_MODE=${BASE_KINEMATIC_ANCHOR_MODE:-usd}
+      # arm_flex のドライブ力上限 [N*m]。100 だと台車搬送時の外乱に負けて
+      # maxVelocity(1.2rad/s) で飽和したまま落ち続ける。
+      - ARM_FLEX_MAX_FORCE=${ARM_FLEX_MAX_FORCE:-300}
+      - BASE_VELOCITY_WRITE=${BASE_VELOCITY_WRITE:-1}
+      - BASE_TRAJ_P_GAIN=${BASE_TRAJ_P_GAIN:-2.0}
+      - BASE_TRAJ_D_GAIN=${BASE_TRAJ_D_GAIN:-0.5}
+      - BASE_TRAJ_I_GAIN=${BASE_TRAJ_I_GAIN:-4.0}
+      - BASE_TRAJ_I_LINEAR_LIMIT=${BASE_TRAJ_I_LINEAR_LIMIT:-0.08}
+      - BASE_TRAJ_I_ANGULAR_LIMIT=${BASE_TRAJ_I_ANGULAR_LIMIT:-0.15}
+      - BASE_CMD_TAU=${BASE_CMD_TAU:-0.10}
+      - BASE_WHEEL_ACCEL_LIMIT=${BASE_WHEEL_ACCEL_LIMIT:-41.7}
+      - BASE_STEER_ACCEL_LIMIT=${BASE_STEER_ACCEL_LIMIT:-5.0}
+      # 台車の並進/回転の加速度上限。実測ではここが応答を支配する (CMD_TAU ではない)。
+      # 0.35/0.8 だと pumas_nav2 が曲がりきれず、ゴール手前の減速中に simple_move の
+      # attempts (wall tick 予算) が尽きて abort していたため引き上げた。
+      - BASE_LINEAR_ACCEL_LIMIT=${BASE_LINEAR_ACCEL_LIMIT:-1.0}
+      - BASE_ANGULAR_ACCEL_LIMIT=${BASE_ANGULAR_ACCEL_LIMIT:-2.0}
+      - BASE_WHEEL_DRIVE_DAMPING=${BASE_WHEEL_DRIVE_DAMPING:-10.0}
+      # キャスターの転がり軸の粘性摩擦。0 にすると静止後も永久に回り続ける。
+      - BASE_PASSIVE_WHEEL_DAMPING=${BASE_PASSIVE_WHEEL_DAMPING:-0.001}
+      - BASE_WHEEL_DRIVE_MAX_FORCE=${BASE_WHEEL_DRIVE_MAX_FORCE:-10.0}
+      - BASE_STEER_DRIVE_DAMPING=${BASE_STEER_DRIVE_DAMPING:-5.0}
+      - BASE_STEER_DRIVE_MAX_FORCE=${BASE_STEER_DRIVE_MAX_FORCE:-5.0}
+      - BASE_DIRECT_JOINT_DAMPING=${BASE_DIRECT_JOINT_DAMPING:-1.0}
+      - BASE_DIRECT_JOINT_MAX_FORCE=${BASE_DIRECT_JOINT_MAX_FORCE:-1.0}
+      - BASE_DIRECT_ROOT_DAMPING=${BASE_DIRECT_ROOT_DAMPING:-2.0}
+      # 駐車ブレーキ: 静止中は planar joint のバネで台車を保持し、腕の反動で
+      # 流されないようにする。`make up BASE_BRAKE=0` で無効化。
+      - BASE_BRAKE=${BASE_BRAKE:-1}
+      - BASE_BRAKE_ENGAGE_LINEAR=${BASE_BRAKE_ENGAGE_LINEAR:-0.05}
+      - BASE_BRAKE_ENGAGE_ANGULAR=${BASE_BRAKE_ENGAGE_ANGULAR:-0.10}
+      - BASE_BRAKE_CREEP_SPEED=${BASE_BRAKE_CREEP_SPEED:-0.05}
+      - BASE_BRAKE_CREEP_ANGULAR=${BASE_BRAKE_CREEP_ANGULAR:-0.15}
+      - BASE_BRAKE_K=${BASE_BRAKE_K:-200000}
+      - BASE_BRAKE_C=${BASE_BRAKE_C:-20000}
+      - BASE_BRAKE_MAX_FORCE=${BASE_BRAKE_MAX_FORCE:-20000}
+      - BASE_BRAKE_ANGULAR_K=${BASE_BRAKE_ANGULAR_K:-50000}
+      - BASE_BRAKE_ANGULAR_C=${BASE_BRAKE_ANGULAR_C:-5000}
+      - BASE_BRAKE_MAX_TORQUE=${BASE_BRAKE_MAX_TORQUE:-5000}
+      - BASE_PHYSICS_REPORT=${BASE_PHYSICS_REPORT:-1}
+      - BASE_SETPOINT_MAX_LAG=${BASE_SETPOINT_MAX_LAG:-0.02}
+      - BASE_SETPOINT_MAX_LAG_ANGULAR=${BASE_SETPOINT_MAX_LAG_ANGULAR:-0.05}
+      - BASE_GOAL_VELOCITY_TOLERANCE=${BASE_GOAL_VELOCITY_TOLERANCE:-0.10}
+      - BASE_JOINT_BRAKE=${BASE_JOINT_BRAKE:-1}
+      - OBJECT_POSE_REPORT=${OBJECT_POSE_REPORT:-1}
+      - BASE_DIAG=${BASE_DIAG:-0}
+
+      # カメラ publish [Hz] = 60 / RENDER_EVERY_N_STEPS / (CAMERA_FRAME_SKIP + 1) * RTF
+      # 既定は 60/2/1 = 30 Hz で実機の HSR に合わせる。物理・whole-body制御・/clock は 60 Hz のまま。
+      # 描画フレームを間引かず全部 publish する (0 = 毎描画フレーム)。
+      - CAMERA_FRAME_SKIP=${CAMERA_FRAME_SKIP:-0}
+
+      # Isaacの画面描画は既定30 Hz (物理2ステップに1回)。
+      - RENDER_EVERY_N_STEPS=${RENDER_EVERY_N_STEPS:-2}
+      # head_l/head_r ステレオ(1280x960 x2)は描画予算の 73% を食うのに購読者が居ないので既定 off。
+      # ステレオ画像が要るタスクのときだけ 1 にする。
+      - ENABLE_STEREO_CAMERAS=${ENABLE_STEREO_CAMERAS:-0}
       - CYCLONEDDS_URI=${CYCLONEDDS_URI:-file:///cyclonedds.xml}
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+
+      # 学生環境と揃える (上の ros2 サービスと同じ値にすること)
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-26}
     volumes:
+      # DDS 設定を live マウント (ros2 サービスと同じ。`make up localhost` で切り替わる)
+      - ../assets/cyclonedds.xml:/cyclonedds.xml:ro
+      - ../assets/cyclonedds.localhost.xml:/cyclonedds.localhost.xml:ro
       - ../scripts/launch_isaacsim.py:/app/launch_isaacsim.py:ro
       - ../scripts/hsr.py:/app/hsr.py:ro
       - ../scripts/arena_cameras.py:/app/arena_cameras.py:ro

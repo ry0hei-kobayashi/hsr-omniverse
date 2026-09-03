@@ -1,0 +1,153 @@
+# ============================================================
+# 競技用固定配置 Seed 4
+# ============================================================
+# 得点対象: Food 5 + Shape 5 + Kitchen 5 + Task 5 + Unknown 2 = 22個
+# 別枠: place用棚の見本2個 + Obstacle Object 1個
+# Object Listと共通座標の正本: configs/placement.compe.yaml
+
+competition:
+  seed: 4
+  selected:
+    Food:
+      - ycb_010_potted_meat_can
+      - ycb_007_tuna_fish_can
+      - ycb_004_sugar_box
+      - ycb_014_lemon
+      - ycb_009_gelatin_box
+    Shape:
+      - ycb_061_foam_brick
+      - ycb_055_baseball
+      - ycb_054_softball
+      - ycb_062_dice
+      - ycb_053_mini_soccer_ball
+    Kitchen:
+      - ycb_029_plate
+      - ycb_031_spoon
+      - ycb_025_mug
+      - ycb_033_spatula
+      - ycb_019_pitcher_base
+    Task:
+      - ycb_051_large_clamp
+      - ycb_036_wood_block
+      - ycb_050_medium_clamp
+      - ycb_040_large_marker
+      - ycb_052_extra_large_clamp
+    Unknown:
+      - dualshock
+      - hamburger
+  shelf_place_samples:
+    Food: ycb_011_banana
+    Task: ycb_071_nine_hole_peg_test
+  obstacle:
+    name: Toy airplane
+    model: ycb_072-a_toy_airplane
+    candidate_position: 4
+
+objects:
+  drop_clearance: 0.1
+
+  # 得点対象: 長机前の床9個
+  floor:
+    - object: hamburger  # Unknown
+      x: 7.55
+      y: 2.7
+      yaw: 1.57
+    - object: ycb_004_sugar_box  # Food
+      x: 7.3
+      y: 2.9
+    - object: ycb_014_lemon  # Food
+      x: 7.55
+      y: 3.1
+    - object: ycb_054_softball  # Shape
+      x: 7.3
+      y: 3.3
+    - object: ycb_040_large_marker  # Task
+      x: 7.55
+      y: 3.6
+    - object: ycb_033_spatula  # Kitchen
+      x: 7.3
+      y: 3.7
+    - object: ycb_019_pitcher_base  # Kitchen
+      x: 7.55
+      y: 4.0
+    - object: ycb_050_medium_clamp  # Task
+      x: 7.3
+      y: 4.3
+    - object: ycb_025_mug  # Kitchen
+      x: 7.55
+      y: 4.5
+
+  # 得点対象: 高い机前の床5個
+    - object: ycb_051_large_clamp  # Task
+      x: 7.5
+      y: 0.0
+    - object: ycb_007_tuna_fish_can  # Food
+      x: 7.3
+      y: 0.4
+    - object: ycb_036_wood_block  # Task
+      x: 7.5
+      y: 0.7
+    - object: ycb_031_spoon  # Kitchen
+      x: 7.3
+      y: 1.05
+    - object: ycb_029_plate  # Kitchen
+      x: 7.5
+      y: 1.25
+
+  # 得点対象外: 通路上のObstacle Object 1個
+  obstacles:
+    - object: ycb_072-a_toy_airplane
+      x: 2.7
+      y: 0.2
+
+  placements:
+    # 得点対象: 長机上3個
+    wrc_long_table:
+      - object: ycb_009_gelatin_box  # Food
+        dx: 0.0
+        dy: -0.1
+      - object: ycb_053_mini_soccer_ball  # Shape
+        dx: 0.4
+        dy: 0.05
+      - object: ycb_061_foam_brick  # Shape
+        dx: -0.4
+        dy: 0.05
+
+    # 得点対象: 高い机上1個
+    wrc_tall_table:
+      - object: ycb_055_baseball  # Shape
+
+    # 得点対象: 丸机上2個
+    round_table:
+      - object: ycb_052_extra_large_clamp  # Task
+        dx: -0.1
+        dy: -0.3
+      - object: ycb_062_dice  # Shape
+        dx: -0.3
+        dy: -0.15
+
+    # 得点対象外: place用棚のカテゴリ見本 (tier 1=Food, tier 2=Task)
+    wrc_bookshelf:
+      - object: ycb_011_banana  # Food
+        tier: 1
+      - object: ycb_071_nine_hole_peg_test  # Task
+        tier: 2
+
+    # 得点対象: pick用棚の2個
+    wrc_bookshelf_2:
+      - object: dualshock  # Unknown
+        tier: 1
+        dx: 0.05
+        dy: -0.05
+      - object: ycb_010_potted_meat_can  # Food
+        tier: 2
+        dx: -0.1
+        dy: -0.05
+
+# round_tableの天板位置をobject_placement.pyが計算するための定義。
+furniture:
+  - usd: restaurant/round_table/model.usd
+    name: round_table
+    x: 5.9
+    y: 3.9
+    scale: 0.85
